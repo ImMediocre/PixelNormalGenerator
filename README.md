@@ -17,10 +17,24 @@ Generate stylized normal maps for pixel art directly inside Aseprite.
 
 ---
 
+## Quick start
+
+```text
+Install
+  ↓
+Edit → FX → Pixel Normal Generator
+  ↓
+Generate
+  ↓
+Export & use in your engine
+```
+
+---
+
 ## Why
 
 Generic height-to-normal tools were built for photographic textures. Point them at pixel
-art and every 1px detail becomes an aggressive bevel/emboss — "cringe results". This
+art and every 1px detail becomes an aggressive bevel/emboss. This
 extension is tuned for small sprites: gentle heightmap denoise + blur *before* the gradient,
 posterized output, optional silhouette rim-light, and per-mode control so the lighting still
 respects the pixel-art aesthetic.
