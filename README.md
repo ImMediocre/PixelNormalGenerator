@@ -11,6 +11,21 @@ instead of producing a soft 2007-era emboss.
 
 ---
 
+## Example
+
+![Pixel Normal Generator demo — source sprite, generated normal map, and the sprite lit by a moving light](docs/demo.gif)
+
+*Left → right: the **source sprite**, the **generated normal map**, and the same sprite
+**lit in real time by a moving light** — the dot shows the light position. This is exactly
+what the in-dialog movable-light preview gives you, and what the normal map produces in an
+engine like Godot.*
+
+| Source | Normal map |
+|:------:|:----------:|
+| ![source sprite](docs/source.png) | ![generated normal map](docs/normalmap.png) |
+
+---
+
 ## Why
 
 Generic height-to-normal tools were built for photographic textures. Point them at pixel
