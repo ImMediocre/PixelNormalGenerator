@@ -1,28 +1,18 @@
 # Pixel Normal Generator
 
-An Aseprite extension that generates **normal maps from pixel art** — without turning your
-crisp sprites into "vaseline bas-relief". It follows the height→Sobel→normal pipeline
-popularised by the r/godot "(time) poor man's normal map generation for pixel art" post,
-but does it natively inside Aseprite with a live, movable-light preview.
+Generate stylized normal maps for pixel art directly inside Aseprite.
 
-The golden rule it bakes in: **smooth the *heightmap* before Sobel, then posterize the
-*normal* — never blur the finished normal map.** That preserves the stepped, pixel-art look
-instead of producing a soft 2007-era emboss.
+- **Alpha mode** — volume and rim-light straight from the silhouette
+- **Height / Channel mode** — normals from luminance or an R/G/B/A channel
+- **Paint Height mode** — convert a hand-painted black-and-white height layer
+- **Live light preview** — move a light over the result before committing
+- **Posterized, pixel-art output** — stepped normals that keep crisp pixel edges
 
----
+![Original sprite, generated normal map, and the sprite lit by a moving light](docs/demo.gif)
 
-## Example
-
-![Pixel Normal Generator demo — source sprite, generated normal map, and the sprite lit by a moving light](docs/demo.gif)
-
-*Left → right: the **source sprite**, the **generated normal map**, and the same sprite
-**lit in real time by a moving light** — the dot shows the light position. This is exactly
-what the in-dialog movable-light preview gives you, and what the normal map produces in an
-engine like Godot.*
-
-| Source | Normal map |
-|:------:|:----------:|
-| ![source sprite](docs/source.png) | ![generated normal map](docs/normalmap.png) |
+> **The trick:** smooth the *heightmap* before Sobel, then posterize the *normal* — never
+> blur the finished normal map. That keeps the stepped, pixel-art look and preserves crisp
+> pixel edges instead of an over-beveled emboss.
 
 ---
 
@@ -148,7 +138,7 @@ standing in light.
 
 ## Credits
 
-- Pipeline inspired by the r/godot post *"A (time) poor man's normal map generation for
+- Inspired by the r/godot post *"A (time) poor man's normal map generation for
   pixel art"* (Krita: noise-reduce → blur → height-to-normal → posterize).
 - Built for Aseprite's Lua scripting API.
 
