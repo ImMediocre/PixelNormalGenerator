@@ -7,6 +7,7 @@ Generate stylized normal maps for pixel art directly inside Aseprite.
 - **Paint Height mode** — convert a hand-painted black-and-white height layer
 - **Live light preview** — move a light over the result before committing
 - **Posterized, pixel-art output** — stepped normals that keep crisp pixel edges
+- **Normal and/or Height export** — output the normal map, the height map, or both
 
 ![Original sprite, generated normal map, and the sprite lit by a moving light](docs/demo.gif)
 
@@ -68,8 +69,19 @@ source image (frame composite, or a chosen height layer)
 | **Preserve alpha**   | Copy the source alpha onto the normal map (keeps the silhouette)          |
 | **Rim from alpha**   | Overlay alpha edge normals near the silhouette for a subtle rim-light     |
 | **Rim width/strength** | How far in from the edge the rim reaches, and how strongly it bends     |
-| **Output**           | New layer in the current sprite, or a brand-new sprite                    |
-| **All frames**       | Generate a normal map for every frame (animations / sheets)              |
+| **Generate**         | Normal map, Height map, or both (separate layers/sprites)                 |
+| **Output**           | New layer(s) in the current sprite, or a brand-new sprite                 |
+| **All frames**       | Generate for every frame (animations / sheets)                           |
+
+### Height map output
+
+Besides the normal map you can output the **processed height map** (the denoised,
+blurred grayscale elevation the Sobel reads — white = high). It's left smooth on
+purpose: a height map is most useful for parallax, self-shadowing and ambient-occlusion
+in a shader, where you usually *don't* want it posterized. The movable-light preview
+always shows the lit **normal** (the height map has nothing interactive to preview).
+Layers/sprites are named `Normal Map` and `Height Map`, are reused on re-run (never
+stacked), and are automatically excluded as a height source.
 
 ## Live preview
 
@@ -123,9 +135,10 @@ standing in light.
 
 ## Notes & behaviour
 
-- **Re-running is safe.** Generating to a *New layer* reuses a single layer named
-  `Normal Map` (it overwrites, it doesn't stack duplicates), and that layer is
-  automatically excluded from the height source — so tweak-then-regenerate works.
+- **Re-running is safe.** Output to a *New layer* reuses the `Normal Map` / `Height Map`
+  layers by name (it overwrites, it never stacks duplicates — even after closing and
+  reopening the dialog), and those layers are automatically excluded from the height
+  source, so tweak-then-regenerate works.
 - **New sprite output** opens the normal map as its own RGB document. To keep
   tuning afterwards, switch back to the original sprite first (the dialog only
   previews/generates while your source sprite is active).

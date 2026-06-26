@@ -18,6 +18,9 @@ local OUT_LAYER  = "New layer"
 local OUT_SPRITE = "New sprite"
 local FR_CURRENT = "Current frame"
 local FR_ALL     = "All frames"
+local CONTENT_NORMAL = "Normal map"
+local CONTENT_HEIGHT = "Height map"
+local CONTENT_BOTH   = "Normal + Height"
 
 local PREVIEW_MAX = 128 -- preview is relit on every mouse move; cap its resolution
 
@@ -75,43 +78,44 @@ function UI.open(plugin, NM)
   local sprite = app.sprite
   if not sprite then return end
 
-  -- Declared up front so the render helpers below close over it (Lua captures a
-  -- local as an upvalue only if it is declared BEFORE the function).
-  local OUTPUT_NAME = "Normal Map"
-  local outputLayer -- our generated layer; excluded from the height composite
+  -- Display names of the layers we generate.
+  local OUTPUT_NORMAL = "Normal Map"
+  local OUTPUT_HEIGHT = "Height Map"
+  -- We identify OUR layers by a plugin-scoped custom property (a TAG), never by
+  -- name — so a user's own layer that happens to be called "Normal Map" is never
+  -- adopted or overwritten. The tag persists in the file, so reuse works across
+  -- runs and reopens; looking it up each time avoids stale Layer references.
+  local PLUGIN_KEY = "immediocre/pixel-normal-generator"
 
-  -- Find an existing "Normal Map" image layer anywhere in the sprite (nil if none).
-  local function findOutputLayer()
+  local function tagKind(ly) -- "normal" | "height" | nil (only layers we made)
+    local ok, v = pcall(function() return ly.properties(PLUGIN_KEY).output end)
+    return ok and v or nil
+  end
+
+  local function markOurs(ly, kind)
+    pcall(function() ly.properties(PLUGIN_KEY).output = kind end)
+  end
+
+  -- Find the layer WE generated for `kind` anywhere in the sprite (nil if none).
+  local function findOurLayer(kind)
     local found
     local function walk(layers)
       for _, ly in ipairs(layers) do
         if ly.isGroup then walk(ly.layers)
-        elseif ly.isImage and ly.name == OUTPUT_NAME then found = ly end
+        elseif ly.isImage and tagKind(ly) == kind then found = ly end
       end
     end
-    local ok = pcall(function() walk(sprite.layers) end)
-    return (ok and found) or nil
+    pcall(function() walk(sprite.layers) end)
+    return found
   end
 
-  -- Return outputLayer only if it is still a live layer of `sprite`; otherwise
-  -- drop the dead reference (after undo / manual delete) and re-discover one by
-  -- name. Keeps find-or-create and composite-exclusion correct across reopen/undo.
-  local function validOutputLayer()
-    if outputLayer then
-      local ok, alive = pcall(function()
-        local function inside(layers)
-          for _, ly in ipairs(layers) do
-            if ly == outputLayer then return true end
-            if ly.isGroup and inside(ly.layers) then return true end
-          end
-          return false
-        end
-        return inside(sprite.layers)
-      end)
-      if not (ok and alive) then outputLayer = nil end
-    end
-    if not outputLayer then outputLayer = findOutputLayer() end
-    return outputLayer
+  -- Our existing output layers — excluded from the height composite so a prior
+  -- result never feeds back into a new one.
+  local function outputLayers()
+    local t = {}
+    local n = findOurLayer("normal"); if n then t[#t + 1] = n end
+    local h = findOurLayer("height"); if h then t[#t + 1] = h end
+    return t
   end
 
   local prefs = plugin.preferences
@@ -141,14 +145,14 @@ function UI.open(plugin, NM)
     return img
   end
 
-  local function renderFrame(fr) -- composite of visible layers, minus our own output
-    local ol = validOutputLayer()
-    return renderHiding(fr, ol and { ol } or {})
+  local function renderFrame(fr) -- composite of visible layers, minus our outputs
+    return renderHiding(fr, outputLayers())
   end
 
-  local function renderCompositeExcluding(excludeLayer, fr) -- composite minus a layer (+ our output)
-    local ol = validOutputLayer()
-    return renderHiding(fr, ol and { excludeLayer, ol } or { excludeLayer })
+  local function renderCompositeExcluding(excludeLayer, fr) -- composite minus a layer (+ our outputs)
+    local hide = outputLayers()
+    hide[#hide + 1] = excludeLayer
+    return renderHiding(fr, hide)
   end
 
   local function renderLayerToRGB(layer, fr) -- one layer's cel, palette-aware, RGB
@@ -174,10 +178,9 @@ function UI.open(plugin, NM)
   end
 
   -- ----- state ---------------------------------------------------------------
-  outputLayer = findOutputLayer() -- adopt a pre-existing "Normal Map" layer on open
-  local imageLayers = {}
+  local imageLayers = {} -- never offer OUR OWN generated layers as a height source
   for _, ly in ipairs(collectImageLayers(sprite)) do
-    if ly ~= outputLayer then imageLayers[#imageLayers + 1] = ly end -- never a height source
+    if not tagKind(ly) then imageLayers[#imageLayers + 1] = ly end
   end
   local layerNames, layerByLabel = {}, {}
   for i, ly in ipairs(imageLayers) do
@@ -371,6 +374,35 @@ function UI.open(plugin, NM)
     return { workFrame() }
   end
 
+  -- Generate the requested map(s) for one source frame.
+  local function genFrame(fr, opts, doNormal, doHeight)
+    local hi, ai = inputsFor(fr)
+    if doNormal and doHeight then return NM.generateBoth(hi, ai, opts) end
+    if doNormal then return NM.generate(hi, ai, opts), nil end
+    return nil, NM.heightImage(hi, ai, opts)
+  end
+
+  local function setCel(spr, layer, fr, img)
+    if not img then return end
+    local existing = findCel(layer, fr)
+    if existing then
+      existing.image = img
+      existing.position = Point(0, 0)
+    else
+      spr:newCel(layer, fr, img, Point(0, 0))
+    end
+  end
+
+  local function getOrCreateLayer(kind, name) -- find-or-create OUR layer across runs/reopens
+    local ly = findOurLayer(kind)
+    if not ly then
+      ly = sprite:newLayer()
+      ly.name = name
+      markOurs(ly, kind)
+    end
+    return ly
+  end
+
   local function doGenerate()
     if app.sprite ~= sprite then
       app.alert{ title = "Pixel Normal Generator",
@@ -379,11 +411,14 @@ function UI.open(plugin, NM)
     end
     local opts = currentOpts()
     local output = dlg.data.output
+    local content = dlg.data.content
+    local doNormal = content ~= CONTENT_HEIGHT
+    local doHeight = content ~= CONTENT_NORMAL
 
     if output == OUT_LAYER and sprite.colorMode ~= ColorMode.RGB then
       app.alert{ title = "Pixel Normal Generator",
-        text = { "The sprite is not RGB, so a normal-map layer can't live in it.",
-                 "Creating the normal map as a new RGB sprite instead." } }
+        text = { "The sprite is not RGB, so the map can't live as a layer in it.",
+                 "Creating the result as a new RGB sprite instead." } }
       output = OUT_SPRITE
     end
 
@@ -391,55 +426,50 @@ function UI.open(plugin, NM)
     local count = 0
 
     if output == OUT_LAYER then
-      app.transaction("Generate Normal Map", function()
-        -- Reuse our own layer across runs (don't stack duplicates); it is
-        -- excluded from the height composite via renderHiding(outputLayer).
-        local layer = validOutputLayer() or sprite:newLayer()
-        layer.name = OUTPUT_NAME
-        outputLayer = layer
+      app.transaction("Generate Normal / Height Map", function()
+        -- Find-or-create our layers; they are excluded from the height composite
+        -- (by name) so a previous result never feeds back into a new one.
+        local nLayer = doNormal and getOrCreateLayer("normal", OUTPUT_NORMAL) or nil
+        local hLayer = doHeight and getOrCreateLayer("height", OUTPUT_HEIGHT) or nil
         for _, fr in ipairs(frames) do
-          local hi, ai = inputsFor(fr)
-          local img = NM.generate(hi, ai, opts)
-          local existing = findCel(layer, fr)
-          if existing then
-            existing.image = img
-            existing.position = Point(0, 0)
-          else
-            sprite:newCel(layer, fr, img, Point(0, 0))
-          end
+          local nimg, himg = genFrame(fr, opts, doNormal, doHeight)
+          if nLayer then setCel(sprite, nLayer, fr, nimg) end
+          if hLayer then setCel(sprite, hLayer, fr, himg) end
           count = count + 1
         end
       end)
       app.refresh()
     else
-      -- Snapshot the generated images from the SOURCE sprite first...
-      local imgs = {}
+      -- Snapshot from the SOURCE first (Sprite() below activates a new document).
+      local snap = {}
       for i, fr in ipairs(frames) do
-        local hi, ai = inputsFor(fr)
-        imgs[i] = NM.generate(hi, ai, opts)
+        local nimg, himg = genFrame(fr, opts, doNormal, doHeight)
+        snap[i] = { normal = nimg, height = himg }
         count = count + 1
       end
-      -- ...then drop them into a brand-new RGB sprite.
       local nspr = Sprite(sprite.width, sprite.height, ColorMode.RGB)
-      local nlayer = nspr.layers[1]
-      nlayer.name = "Normal Map"
-      app.transaction("Normal Map", function()
-        for i = 1, #imgs do
+      local nLayer, hLayer
+      if doNormal then
+        nLayer = nspr.layers[1]; nLayer.name = OUTPUT_NORMAL
+        pcall(function() nLayer.properties(PLUGIN_KEY).output = "normal" end)
+      end
+      if doHeight then
+        hLayer = doNormal and nspr:newLayer() or nspr.layers[1]
+        hLayer.name = OUTPUT_HEIGHT
+        pcall(function() hLayer.properties(PLUGIN_KEY).output = "height" end)
+      end
+      app.transaction("Normal / Height Map", function()
+        for i = 1, #snap do
           if i > #nspr.frames then nspr:newEmptyFrame() end
-          local existing = findCel(nlayer, i)
-          if existing then
-            existing.image = imgs[i]
-            existing.position = Point(0, 0)
-          else
-            nspr:newCel(nlayer, i, imgs[i], Point(0, 0))
-          end
+          setCel(nspr, nLayer, i, snap[i].normal)
+          setCel(nspr, hLayer, i, snap[i].height)
         end
       end)
       app.refresh()
     end
 
     app.alert{ title = "Pixel Normal Generator",
-      text = "Generated normal map for " .. count ..
+      text = "Generated " .. string.lower(content) .. " for " .. count ..
              (count == 1 and " frame." or " frames.") }
   end
 
@@ -460,6 +490,7 @@ function UI.open(plugin, NM)
     prefs.rimStrength   = d.rimStrength
     prefs.rimWidth      = d.rimWidth
     prefs.lightHeight   = d.lightHeight
+    prefs.content       = d.content
     prefs.output        = d.output
     prefs.frames        = d.frames
   end
@@ -564,6 +595,8 @@ function UI.open(plugin, NM)
               onchange = function() relight(); if shown then dlg:repaint() end end }
 
   dlg:separator{ text = "Output" }
+  dlg:combobox{ id = "content", label = "Generate", option = getp("content", CONTENT_NORMAL),
+                options = { CONTENT_NORMAL, CONTENT_HEIGHT, CONTENT_BOTH } }
   dlg:combobox{ id = "output", label = "Target", option = getp("output", OUT_LAYER),
                 options = { OUT_LAYER, OUT_SPRITE } }
   dlg:combobox{ id = "frames", label = "Frames", option = getp("frames", FR_CURRENT),

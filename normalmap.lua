@@ -130,13 +130,27 @@ end
 --   rimStrength   number
 --   rimWidth      int   - alpha Sobel step for the rim (reach inward)
 --------------------------------------------------------------------------------
-function M.generate(heightImg, alphaImg, opts)
+-- Shared preprocessing: extract the chosen height channel, optional denoise,
+-- then blur the heightmap (BEFORE Sobel). Returns H (0..1), A (0..255), w, h.
+local function prepare(heightImg, alphaImg, opts)
   local w, h = alphaImg.width, alphaImg.height
   local H, A = extract(heightImg, alphaImg, opts.source, w, h)
-
   if opts.denoise then H = median3(H, w, h) end
   H = boxBlur(H, w, h, opts.blurRadius, opts.blurPasses)
+  return H, A, w, h
+end
 
+-- Build a channel posterizer (nil when posterize is off).
+local function posterizer(steps)
+  if not steps or steps <= 1 then return nil end
+  return function(v)
+    local q = floor(v / 255 * (steps - 1) + 0.5)
+    return floor(q / (steps - 1) * 255 + 0.5)
+  end
+end
+
+-- Sobel-encode the prepared heightmap into a tangent-space normal map (RGB).
+local function encodeNormal(H, A, w, h, opts)
   local alphaAware = opts.alphaAware
   local strength   = opts.strength
   local step       = math.max(1, opts.step)
@@ -145,9 +159,8 @@ function M.generate(heightImg, alphaImg, opts)
   local rim        = opts.rim
   local rimStr     = opts.rimStrength or 0
   local rimStep    = math.max(1, opts.rimWidth or 1)
-  local steps      = opts.posterize or 0
-  local doPost     = steps and steps > 1
   local keepAlpha  = opts.preserveAlpha
+  local post       = posterizer(opts.posterize)
 
   -- Divide the central difference by the sampling distance so `step` widens the
   -- baseline WITHOUT secretly scaling bump strength (0.25 is the 1+2+1 weight sum).
@@ -169,14 +182,8 @@ function M.generate(heightImg, alphaImg, opts)
     return A[clampi(y, 0, h - 1) * w + clampi(x, 0, w - 1) + 1] / 255
   end
 
-  local function post(v)
-    local q = floor(v / 255 * (steps - 1) + 0.5)
-    return floor(q / (steps - 1) * 255 + 0.5)
-  end
-
   local out = Image(w, h, ColorMode.RGB)
-  local neutralA = keepAlpha and 0 or 255
-  local neutral = rgba(128, 128, 255, neutralA)
+  local neutral = rgba(128, 128, 255, keepAlpha and 0 or 255)
 
   for it in out:pixels() do
     local x, y = it.x, it.y
@@ -228,13 +235,50 @@ function M.generate(heightImg, alphaImg, opts)
       local G = clampi(floor(ny * 127.5 + 128), 0, 255)
       local B = clampi(floor(nz * 127.5 + 128), 0, 255)
 
-      if doPost then R = post(R); G = post(G); B = post(B) end
+      if post then R = post(R); G = post(G); B = post(B) end
 
       it(rgba(R, G, B, keepAlpha and a or 255))
     end
   end
 
   return out
+end
+
+-- Encode the prepared (denoised + blurred) heightmap as a grayscale RGB image,
+-- white = high. Left smooth on purpose (posterize is a normal-encoding aesthetic;
+-- a height map is more useful smooth for parallax / self-shadow / AO in shaders).
+local function encodeHeight(H, A, w, h, opts)
+  local keepAlpha = opts.preserveAlpha
+  local out = Image(w, h, ColorMode.RGB)
+  for it in out:pixels() do
+    local idx = it.y * w + it.x + 1
+    local a = A[idx]
+    if a == 0 then
+      it(rgba(0, 0, 0, keepAlpha and 0 or 255))
+    else
+      local v = clampi(floor(H[idx] * 255 + 0.5), 0, 255)
+      it(rgba(v, v, v, keepAlpha and a or 255))
+    end
+  end
+  return out
+end
+
+-- Public API ------------------------------------------------------------------
+
+function M.generate(heightImg, alphaImg, opts)
+  local H, A, w, h = prepare(heightImg, alphaImg, opts)
+  return encodeNormal(H, A, w, h, opts)
+end
+
+function M.heightImage(heightImg, alphaImg, opts)
+  local H, A, w, h = prepare(heightImg, alphaImg, opts)
+  return encodeHeight(H, A, w, h, opts)
+end
+
+-- Prepare the heightmap once; return both the normal map and the height map.
+function M.generateBoth(heightImg, alphaImg, opts)
+  local H, A, w, h = prepare(heightImg, alphaImg, opts)
+  return encodeNormal(H, A, w, h, opts), encodeHeight(H, A, w, h, opts)
 end
 
 return M
