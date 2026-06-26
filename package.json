@@ -1,0 +1,17 @@
+{
+  "name": "pixel-normal-generator",
+  "displayName": "Pixel Normal Generator",
+  "description": "Generate pixel-art-friendly normal maps (height -> Sobel -> normal) with three modes and a movable-light preview.",
+  "version": "1.0.0",
+  "author": {
+    "name": "ImMediocre",
+    "url": "https://github.com/ImMediocre/PixelNormalGenerator"
+  },
+  "license": "MIT",
+  "categories": [ "Scripts" ],
+  "contributes": {
+    "scripts": [
+      { "path": "./main.lua" }
+    ]
+  }
+}
