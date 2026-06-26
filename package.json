@@ -2,7 +2,7 @@
   "name": "pixel-normal-generator",
   "displayName": "Pixel Normal Generator",
   "description": "Generate pixel-art normal maps and height maps in Aseprite: alpha / channel / paint-height modes, posterized output, rim light, and a movable-light preview.",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": {
     "name": "ImMediocre",
     "url": "https://github.com/ImMediocre/PixelNormalGenerator"
