@@ -77,7 +77,42 @@ function UI.open(plugin, NM)
 
   -- Declared up front so the render helpers below close over it (Lua captures a
   -- local as an upvalue only if it is declared BEFORE the function).
-  local outputLayer -- our "Normal Map" layer; excluded from the height composite
+  local OUTPUT_NAME = "Normal Map"
+  local outputLayer -- our generated layer; excluded from the height composite
+
+  -- Find an existing "Normal Map" image layer anywhere in the sprite (nil if none).
+  local function findOutputLayer()
+    local found
+    local function walk(layers)
+      for _, ly in ipairs(layers) do
+        if ly.isGroup then walk(ly.layers)
+        elseif ly.isImage and ly.name == OUTPUT_NAME then found = ly end
+      end
+    end
+    local ok = pcall(function() walk(sprite.layers) end)
+    return (ok and found) or nil
+  end
+
+  -- Return outputLayer only if it is still a live layer of `sprite`; otherwise
+  -- drop the dead reference (after undo / manual delete) and re-discover one by
+  -- name. Keeps find-or-create and composite-exclusion correct across reopen/undo.
+  local function validOutputLayer()
+    if outputLayer then
+      local ok, alive = pcall(function()
+        local function inside(layers)
+          for _, ly in ipairs(layers) do
+            if ly == outputLayer then return true end
+            if ly.isGroup and inside(ly.layers) then return true end
+          end
+          return false
+        end
+        return inside(sprite.layers)
+      end)
+      if not (ok and alive) then outputLayer = nil end
+    end
+    if not outputLayer then outputLayer = findOutputLayer() end
+    return outputLayer
+  end
 
   local prefs = plugin.preferences
   local function getp(k, d)
@@ -91,20 +126,29 @@ function UI.open(plugin, NM)
   -- temporarily hidden. Visibility is ALWAYS restored, even if drawSprite throws.
   local function renderHiding(fr, hideList)
     local saved = {}
-    for i = 1, #hideList do saved[i] = hideList[i].isVisible; hideList[i].isVisible = false end
     local img = Image(sprite.width, sprite.height, ColorMode.RGB)
-    local ok, err = pcall(function() img:drawSprite(sprite, fr) end)
-    for i = 1, #hideList do hideList[i].isVisible = saved[i] end
+    local ok, err = pcall(function()
+      for i = 1, #hideList do
+        saved[i] = hideList[i].isVisible
+        hideList[i].isVisible = false
+      end
+      img:drawSprite(sprite, fr)
+    end)
+    for i = 1, #hideList do -- always restore what we changed, even on error
+      if saved[i] ~= nil then pcall(function() hideList[i].isVisible = saved[i] end) end
+    end
     if not ok then error(err) end
     return img
   end
 
   local function renderFrame(fr) -- composite of visible layers, minus our own output
-    return renderHiding(fr, outputLayer and { outputLayer } or {})
+    local ol = validOutputLayer()
+    return renderHiding(fr, ol and { ol } or {})
   end
 
   local function renderCompositeExcluding(excludeLayer, fr) -- composite minus a layer (+ our output)
-    return renderHiding(fr, outputLayer and { excludeLayer, outputLayer } or { excludeLayer })
+    local ol = validOutputLayer()
+    return renderHiding(fr, ol and { excludeLayer, ol } or { excludeLayer })
   end
 
   local function renderLayerToRGB(layer, fr) -- one layer's cel, palette-aware, RGB
@@ -130,7 +174,11 @@ function UI.open(plugin, NM)
   end
 
   -- ----- state ---------------------------------------------------------------
-  local imageLayers = collectImageLayers(sprite)
+  outputLayer = findOutputLayer() -- adopt a pre-existing "Normal Map" layer on open
+  local imageLayers = {}
+  for _, ly in ipairs(collectImageLayers(sprite)) do
+    if ly ~= outputLayer then imageLayers[#imageLayers + 1] = ly end -- never a height source
+  end
   local layerNames, layerByLabel = {}, {}
   for i, ly in ipairs(imageLayers) do
     local label = i .. ": " .. ly.name -- index prefix keeps duplicate names distinct
@@ -278,17 +326,41 @@ function UI.open(plugin, NM)
     return sprite.frames[clampi(n, 1, #sprite.frames)]
   end
 
+  -- Cached preview inputs. The flattened height/alpha composite depends only on
+  -- the frame, mode and height layer — NOT on the numeric slider params — so we
+  -- rebuild it only when that key changes and reuse it for pure-param tweaks.
+  local cacheKey, cacheH, cacheA, cacheSf
+
   local function rebuild(doRepaint)
     if app.sprite ~= sprite then return end -- preview only while our sprite is active
-    local heightImg, alphaImg = inputsFor(workFrame())
-    -- The preview only needs <= PREVIEW_MAX px; downscale the inputs so the
-    -- interpreted-Lua pipeline never runs at full sheet resolution here.
-    if max(heightImg.width, heightImg.height) > PREVIEW_MAX then
-      heightImg = downscaleRGB(heightImg, PREVIEW_MAX)
-      alphaImg = downscaleRGB(alphaImg, PREVIEW_MAX)
+    local fr = workFrame()
+    local key = table.concat({ fr.frameNumber, dlg.data.mode, tostring(dlg.data.heightLayer) }, "|")
+    if key ~= cacheKey or not cacheH then
+      local heightImg, alphaImg = inputsFor(fr)
+      -- The preview only needs <= PREVIEW_MAX px; downscale the inputs so the
+      -- interpreted-Lua pipeline never runs at full sheet resolution here.
+      local sf = 1
+      local m = max(heightImg.width, heightImg.height)
+      if m > PREVIEW_MAX then
+        sf = PREVIEW_MAX / m
+        heightImg = downscaleRGB(heightImg, PREVIEW_MAX)
+        alphaImg = downscaleRGB(alphaImg, PREVIEW_MAX)
+      end
+      cacheH, cacheA, cacheSf, cacheKey = heightImg, alphaImg, sf, key
     end
-    normalImg = NM.generate(heightImg, alphaImg, currentOpts())
-    buildPreviewCache(normalImg, alphaImg)
+
+    local opts = currentOpts()
+    if cacheSf < 1 then
+      -- The Sobel gradient is per-pixel; downscaling by sf makes the preview
+      -- gradient ~1/sf steeper, so compensate to match the full-res output.
+      opts.strength    = opts.strength * cacheSf
+      opts.rimStrength = opts.rimStrength * cacheSf
+      if opts.blurRadius > 0 then opts.blurRadius = max(1, floor(opts.blurRadius * cacheSf + 0.5)) end
+      opts.step = max(1, floor(opts.step * cacheSf + 0.5))
+    end
+
+    normalImg = NM.generate(cacheH, cacheA, opts)
+    buildPreviewCache(normalImg, cacheA)
     relight()
     if doRepaint and shown then dlg:repaint() end
   end
@@ -322,8 +394,8 @@ function UI.open(plugin, NM)
       app.transaction("Generate Normal Map", function()
         -- Reuse our own layer across runs (don't stack duplicates); it is
         -- excluded from the height composite via renderHiding(outputLayer).
-        local layer = outputLayer or sprite:newLayer()
-        layer.name = "Normal Map"
+        local layer = validOutputLayer() or sprite:newLayer()
+        layer.name = OUTPUT_NAME
         outputLayer = layer
         for _, fr in ipairs(frames) do
           local hi, ai = inputsFor(fr)
@@ -426,17 +498,17 @@ function UI.open(plugin, NM)
   dlg:check{ id = "denoise", text = "Denoise (3x3 median)",
              selected = getp("denoise", false), onclick = onParam }
   dlg:slider{ id = "blur", label = "Blur radius", min = 0, max = 8,
-              value = getp("blur", 1), onrelease = onParam }
+              value = getp("blur", 1), onchange = onParam }
   dlg:slider{ id = "passes", label = "Blur passes", min = 1, max = 3,
-              value = getp("passes", 2), onrelease = onParam }
+              value = getp("passes", 2), onchange = onParam }
 
   dlg:separator{ text = "Normal" }
   dlg:slider{ id = "strength", label = "Strength (x0.1)", min = 1, max = 100,
-              value = getp("strength", 20), onrelease = onParam }
+              value = getp("strength", 20), onchange = onParam }
   dlg:slider{ id = "step", label = "Pixel step", min = 1, max = 4,
-              value = getp("step", 1), onrelease = onParam }
+              value = getp("step", 1), onchange = onParam }
   dlg:slider{ id = "posterize", label = "Posterize steps", min = 0, max = 16,
-              value = getp("posterize", 5), onrelease = onParam }
+              value = getp("posterize", 5), onchange = onParam }
   dlg:check{ id = "invertX", text = "Invert X",
              selected = getp("invertX", false), onclick = onParam }
   dlg:check{ id = "invertY", text = "Invert Y (DirectX)",
@@ -449,9 +521,9 @@ function UI.open(plugin, NM)
   dlg:check{ id = "rim", text = "Add rim from alpha",
              selected = getp("rim", false), onclick = onParam }
   dlg:slider{ id = "rimStrength", label = "Rim strength (x0.02)", min = 0, max = 100,
-              value = getp("rimStrength", 30), onrelease = onParam }
+              value = getp("rimStrength", 30), onchange = onParam }
   dlg:slider{ id = "rimWidth", label = "Rim width", min = 1, max = 4,
-              value = getp("rimWidth", 1), onrelease = onParam }
+              value = getp("rimWidth", 1), onchange = onParam }
 
   dlg:separator{ text = "Preview — hover/click = move the light" }
   dlg:canvas{
